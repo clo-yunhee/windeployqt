@@ -51,7 +51,7 @@ QString QmlImportScanResult::Module::installPath(const QString &root) const
     const int lastSlashPos = relativePath.lastIndexOf(QLatin1Char('/'));
     if (lastSlashPos != -1) {
         result += QLatin1Char('/');
-        result += QStringView{relativePath}.left(lastSlashPos);
+        result += relativePath.leftRef(lastSlashPos);
     }
     return result;
 }
@@ -73,12 +73,12 @@ static QString qmlDirectoryRecursion(Platform platform, const QString &path)
 }
 
 // Find a directory containing QML files in the project
-QString findQmlDirectory(Platform platform, const QString &startDirectoryName)
+QString findQmlDirectory(int platform, const QString &startDirectoryName)
 {
     QDir startDirectory(startDirectoryName);
-    if (isBuildDirectory(platform, startDirectory.dirName()))
+    if (isBuildDirectory(Platform(platform), startDirectory.dirName()))
         startDirectory.cdUp();
-    return qmlDirectoryRecursion(platform, startDirectory.path());
+    return qmlDirectoryRecursion(Platform(platform), startDirectory.path());
 }
 
 static void findFileRecursion(const QDir &directory, Platform platform,
@@ -95,16 +95,14 @@ static void findFileRecursion(const QDir &directory, Platform platform,
     }
 }
 
-QmlImportScanResult runQmlImportScanner(const QString &directory, const QStringList &qmlImportPaths,
+QmlImportScanResult runQmlImportScanner(const QString &directory, const QString &qmlImportPath,
                                         bool usesWidgets, int platform, DebugMatchMode debugMatchMode,
                                         QString *errorMessage)
 {
     Q_UNUSED(usesWidgets);
     QmlImportScanResult result;
     QStringList arguments;
-    for (const QString &importPath : qmlImportPaths)
-        arguments << QStringLiteral("-importPath") << importPath;
-    arguments << QStringLiteral("-rootPath") << directory;
+    arguments << QStringLiteral("-importPath") << qmlImportPath << QStringLiteral("-rootPath") << directory;
     unsigned long exitCode;
     QByteArray stdOut;
     QByteArray stdErr;

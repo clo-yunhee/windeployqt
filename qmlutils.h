@@ -35,7 +35,7 @@
 
 QT_BEGIN_NAMESPACE
 
-QString findQmlDirectory(Platform platform, const QString &startDirectoryName);
+QString findQmlDirectory(int platform, const QString &startDirectoryName);
 
 struct QmlImportScanResult {
     struct Module {
@@ -56,7 +56,7 @@ struct QmlImportScanResult {
 
 bool operator==(const QmlImportScanResult::Module &m1, const QmlImportScanResult::Module &m2);
 
-QmlImportScanResult runQmlImportScanner(const QString &directory, const QStringList &qmlImportPaths,
+QmlImportScanResult runQmlImportScanner(const QString &directory, const QString &qmlImportPath,
                                         bool usesWidgets, int platform, DebugMatchMode debugMatchMode,
                                         QString *errorMessage);
 
