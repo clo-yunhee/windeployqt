@@ -30,6 +30,7 @@
 #include "qmlutils.h"
 
 #include <QtCore/QDir>
+#include <QtCore/QDirIterator>
 #include <QtCore/QFileInfo>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QJsonDocument>
@@ -702,9 +703,15 @@ static bool findDependentQtLibraries(const QString &qtBinDir, const QString &bin
     const int start = result->size();
     for (const QString &lib : qAsConst(dependentLibs)) {
         if (isQtModule(lib)) {
-            const QString path = normalizeFileName(qtBinDir + QLatin1Char('/') + QFileInfo(lib).fileName());
-            if (!result->contains(path))
-                result->append(path);
+            const QString dirPath = normalizeFileName(qtBinDir + QLatin1Char('/'));
+            const QString fileName = QFileInfo(lib).fileName();
+
+            QDirIterator dirIt(dirPath, {fileName}, QDir::Files);
+            while (dirIt.hasNext()) {
+                const QString path = dirIt.next();
+                if (!result->contains(path))
+                    result->append(path);
+            }
         }
     }
     const int end = result->size();

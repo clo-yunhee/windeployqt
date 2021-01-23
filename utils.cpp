@@ -970,17 +970,7 @@ QString findD3dCompiler(Platform platform, const QString &qtBinDir, unsigned wor
 
 #else // Q_OS_WIN
 
-bool readPeExecutable(const QString &, QString *errorMessage,
-                      QStringList *, unsigned *, bool *, bool, unsigned short *)
-{
-    *errorMessage = QStringLiteral("Not implemented.");
-    return false;
-}
-
-QString findD3dCompiler(Platform, const QString &, unsigned)
-{
-    return QString();
-}
+#include "read_pe_linux.cpp"
 
 #endif // !Q_OS_WIN
 
