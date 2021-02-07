@@ -175,6 +175,10 @@ static QtModuleEntry qtModuleEntries[] = {
     { QtWebViewModule, "webview", "Qt5WebView", nullptr }
 };
 
+enum QtPlugin {
+    QtVirtualKeyboardPlugin = 0x1
+};
+
 static const char webKitProcessC[] = "QtWebProcess";
 static const char webEngineProcessC[] = "QtWebEngineProcess";
 
@@ -201,18 +205,17 @@ static Platform platformFromMkSpec(const QString &xSpec)
 {
     if (xSpec == QLatin1String("linux-g++"))
         return Unix;
-    if (xSpec.startsWith(QLatin1String("win32-")))
-        return xSpec.contains(QLatin1String("g++")) ? WindowsDesktopMinGW : WindowsDesktop;
-    if (xSpec.startsWith(QLatin1String("winrt-x")))
-        return WinRtIntel;
-    if (xSpec.startsWith(QLatin1String("winrt-arm")))
-        return WinRtArm;
-    if (xSpec.startsWith(QLatin1String("wince"))) {
-        if (xSpec.contains(QLatin1String("-x86-")))
-            return WinCEIntel;
-        if (xSpec.contains(QLatin1String("-arm")))
-            return WinCEArm;
+    if (xSpec.startsWith(QLatin1String("win32-"))) {
+        if (xSpec.contains(QLatin1String("clang-g++")))
+            return WindowsDesktopClangMinGW;
+        if (xSpec.contains(QLatin1String("clang-msvc++")))
+            return WindowsDesktopClangMsvc;
+        return xSpec.contains(QLatin1String("g++")) ? WindowsDesktopMinGW : WindowsDesktopMsvc;
     }
+    if (xSpec.startsWith(QLatin1String("winrt-x")))
+        return WinRtIntelMsvc;
+    if (xSpec.startsWith(QLatin1String("winrt-arm")))
+        return WinRtArmMsvc;
     return UnknownPlatform;
 }
 
@@ -261,15 +264,18 @@ struct Options {
     bool translations = true;
     bool systemD3dCompiler = true;
     bool compilerRunTime = false;
+    unsigned disabledPlugins = 0;
     AngleDetection angleDetection = AngleDetectionAuto;
     bool softwareRasterizer = true;
-    Platform platform = WindowsDesktop;
+    Platform platform = WindowsDesktopMsvc;
     quint64 additionalLibraries = 0;
     quint64 disabledLibraries = 0;
     unsigned updateFileFlags = 0;
     QStringList qmlDirectories; // Project's QML files.
+    QStringList qmlImportPaths; // Custom QML module locations.
     QString directory;
     QString translationsDirectory; // Translations target directory
+    QStringList languages;
     QString libraryDirectory;
     QString pluginDirectory;
     QStringList binaries;
@@ -279,10 +285,9 @@ struct Options {
     bool deployPdb = false;
     bool dryRun = false;
     bool patchQt = true;
+    bool ignoreLibraryErrors = false;
 
-    inline bool isWinRt() const {
-        return platform == WinRtArm || platform == WinRtIntel;
-    }
+    inline bool isWinRt() const { return platform.testFlag(WinRt); }
 };
 
 // Return binary from folder
@@ -370,6 +375,10 @@ static inline int parseArguments(const QStringList &arguments, QCommandLineParse
                                        QStringLiteral("Do not patch the Qt5Core library."));
     parser->addOption(noPatchQtOption);
 
+    QCommandLineOption ignoreErrorOption(QStringLiteral("ignore-library-errors"),
+                                         QStringLiteral("Ignore errors when libraries cannot be found."));
+    parser->addOption(ignoreErrorOption);
+
     QCommandLineOption noPluginsOption(QStringLiteral("no-plugins"),
                                        QStringLiteral("Skip plugin deployment."));
     parser->addOption(noPluginsOption);
@@ -383,9 +392,20 @@ static inline int parseArguments(const QStringList &arguments, QCommandLineParse
                                     QStringLiteral("directory"));
     parser->addOption(qmlDirOption);
 
+    QCommandLineOption qmlImportOption(QStringLiteral("qmlimport"),
+                                       QStringLiteral("Add the given path to the QML module search locations."),
+                                       QStringLiteral("directory"));
+    parser->addOption(qmlImportOption);
+
     QCommandLineOption noQuickImportOption(QStringLiteral("no-quick-import"),
                                            QStringLiteral("Skip deployment of Qt Quick imports."));
     parser->addOption(noQuickImportOption);
+
+
+    QCommandLineOption translationOption(QStringLiteral("translations"),
+                                         QStringLiteral("A comma-separated list of languages to deploy (de,fi)."),
+                                         QStringLiteral("languages"));
+    parser->addOption(translationOption);
 
     QCommandLineOption noTranslationOption(QStringLiteral("no-translations"),
                                            QStringLiteral("Skip deployment of translations."));
@@ -399,6 +419,10 @@ static inline int parseArguments(const QStringList &arguments, QCommandLineParse
     QCommandLineOption compilerRunTimeOption(QStringLiteral("compiler-runtime"),
                                              QStringLiteral("Deploy compiler runtime (Desktop only)."));
     parser->addOption(compilerRunTimeOption);
+
+    QCommandLineOption noVirtualKeyboardOption(QStringLiteral("no-virtualkeyboard"),
+                                               QStringLiteral("Disable deployment of the Virtual Keyboard."));
+    parser->addOption(noVirtualKeyboardOption);
 
     QCommandLineOption noCompilerRunTimeOption(QStringLiteral("no-compiler-runtime"),
                                              QStringLiteral("Do not deploy compiler runtime (Desktop only)."));
@@ -481,6 +505,8 @@ static inline int parseArguments(const QStringList &arguments, QCommandLineParse
     options->plugins = !parser->isSet(noPluginsOption);
     options->libraries = !parser->isSet(noLibraryOption);
     options->translations = !parser->isSet(noTranslationOption);
+    if (parser->isSet(translationOption))
+        options->languages = parser->value(translationOption).split(QLatin1Char(','));
     options->systemD3dCompiler = !parser->isSet(noSystemD3DCompilerOption);
     options->quickImports = !parser->isSet(noQuickImportOption);
 
@@ -489,10 +515,13 @@ static inline int parseArguments(const QStringList &arguments, QCommandLineParse
     else if (parser->isSet(noCompilerRunTimeOption))
         options->compilerRunTime = false;
 
-    if (options->compilerRunTime && options->platform != WindowsDesktopMinGW && options->platform != WindowsDesktop) {
-        *errorMessage = QStringLiteral("Deployment of the compiler runtime is implemented for Desktop only.");
+    if (options->compilerRunTime && options->platform != WindowsDesktopMinGW && options->platform != WindowsDesktopMsvc) {
+        *errorMessage = QStringLiteral("Deployment of the compiler runtime is implemented for Desktop MSVC/g++ only.");
         return CommandLineParseError;
     }
+
+    if (parser->isSet(noVirtualKeyboardOption))
+        options->disabledPlugins |= QtVirtualKeyboardPlugin;
 
     if (parser->isSet(releaseWithDebugInfoOption))
         std::wcerr << "Warning: " << releaseWithDebugInfoOption.names().first() << " is obsolete.";
@@ -509,7 +538,7 @@ static inline int parseArguments(const QStringList &arguments, QCommandLineParse
     }
 
     if (parser->isSet(deployPdbOption)) {
-        if ((options->platform & WindowsBased) && !(options->platform & MinGW))
+        if (options->platform.testFlag(WindowsBased) && !options->platform.testFlag(MinGW))
             options->deployPdb = true;
         else
             std::wcerr << "Warning: --" << deployPdbOption.names().first() << " is not supported on this platform.\n";
@@ -539,6 +568,7 @@ static inline int parseArguments(const QStringList &arguments, QCommandLineParse
     }
 
     options->patchQt = !parser->isSet(noPatchQtOption);
+    options->ignoreLibraryErrors = parser->isSet(ignoreErrorOption);
 
     for (int i = 0; i < qtModulesCount; ++i) {
         if (parser->isSet(*enabledModuleOptions.at(i)))
@@ -595,6 +625,9 @@ static inline int parseArguments(const QStringList &arguments, QCommandLineParse
 
     if (parser->isSet(qmlDirOption))
         options->qmlDirectories = parser->values(qmlDirOption);
+
+    if (parser->isSet(qmlImportOption))
+        options->qmlImportPaths = parser->values(qmlImportOption);
 
     const QString &file = posArgs.front();
     const QFileInfo fi(QDir::cleanPath(file));
@@ -837,6 +870,7 @@ static const PluginModuleMapping pluginModuleMappings[] =
     {"qtwebengine", QtWebEngineModule | QtWebEngineCoreModule | QtWebEngineWidgetsModule},
     {"styles", QtWidgetsModule},
     {"sceneparsers", Qt3DRendererModule},
+    {"renderers", Qt3DRendererModule},
     {"renderplugins", Qt3DRendererModule},
     {"geometryloaders", Qt3DRendererModule},
     {"webview", QtWebViewModule}
@@ -876,6 +910,7 @@ static quint64 qtModule(QString module, const QString &infix)
 }
 
 QStringList findQtPlugins(quint64 *usedQtModules, quint64 disabledQtModules,
+                          unsigned disabledPlugins,
                           const QString &qtPluginsDirName, const QString &libraryLocation,
                           const QString &infix,
                           DebugMatchMode debugMatchModeIn, Platform platform, QString *platformPlugin)
@@ -895,6 +930,8 @@ QStringList findQtPlugins(quint64 *usedQtModules, quint64 disabledQtModules,
                 : debugMatchModeIn;
             QDir subDir(subDirFi.absoluteFilePath());
             // Filter out disabled plugins
+            if ((disabledPlugins & QtVirtualKeyboardPlugin) && subDirName == QLatin1String("virtualkeyboard"))
+                continue;
             if (disabledQtModules & QtQmlToolingModule && subDirName == QLatin1String("qmltooling"))
                 continue;
             // Filter for platform or any.
@@ -902,14 +939,12 @@ QStringList findQtPlugins(quint64 *usedQtModules, quint64 disabledQtModules,
             const bool isPlatformPlugin = subDirName == QLatin1String("platforms");
             if (isPlatformPlugin) {
                 switch (platform) {
-                case WindowsDesktop:
+                case WindowsDesktopMsvc:
                 case WindowsDesktopMinGW:
-                case WinCEIntel:
-                case WinCEArm:
                     filter = QStringLiteral("qwindows");
                     break;
-                case WinRtIntel:
-                case WinRtArm:
+                case WinRtIntelMsvc:
+                case WinRtArmMsvc:
                     filter = QStringLiteral("qwinrt");
                     break;
                 case Unix:
@@ -923,6 +958,11 @@ QStringList findQtPlugins(quint64 *usedQtModules, quint64 disabledQtModules,
             }
             const QStringList plugins = findSharedLibraries(subDir, platform, debugMatchMode, filter);
             for (const QString &plugin : plugins) {
+                // Filter out disabled plugins
+                if ((disabledPlugins & QtVirtualKeyboardPlugin)
+                    && plugin.startsWith(QLatin1String("qtvirtualkeyboardplugin"))) {
+                    continue;
+                }
                 const QString pluginPath = subDir.absoluteFilePath(plugin);
                 if (isPlatformPlugin)
                     *platformPlugin = pluginPath;
@@ -979,9 +1019,9 @@ static bool deployTranslations(const QString &sourcePath, quint64 usedQtModules,
     const QStringList qmFilter = QStringList(QStringLiteral("qtbase_*.qm"));
     const QFileInfoList &qmFiles = sourceDir.entryInfoList(qmFilter);
     for (const QFileInfo &qmFi : qmFiles) {
-        QString qmFile = qmFi.baseName();
-        qmFile.remove(0, 7);
-        prefixes.push_back(qmFile);
+        const QString prefix = qmFi.baseName().mid(7);
+        if (options.languages.isEmpty() || options.languages.contains(prefix))
+            prefixes.append(prefix);
     }
     if (prefixes.isEmpty()) {
         std::wcerr << "Warning: Could not find any translations in "
@@ -1040,9 +1080,9 @@ static QString libraryPath(const QString &libraryLocation, const char *name,
     if (platform & WindowsBased) {
         result += QLatin1String(name);
         result += qtLibInfix;
-        if (debug)
+        if (debug && platformHasDebugSuffix(platform))
             result += QLatin1Char('d');
-    } else if (platform & UnixBased) {
+    } else if (platform.testFlag(UnixBased)) {
         result += QStringLiteral("lib");
         result += QLatin1String(name);
         result += qtLibInfix;
@@ -1051,49 +1091,7 @@ static QString libraryPath(const QString &libraryLocation, const char *name,
     return result;
 }
 
-static QString vcDebugRedistDir() { return QStringLiteral("Debug_NonRedist"); }
-
-static QString vcRedistDir()
-{
-    const char vcDirVar[] = "VCINSTALLDIR";
-    const QChar slash(QLatin1Char('/'));
-    QString vcRedistDirName = QDir::cleanPath(QFile::decodeName(qgetenv(vcDirVar)));
-    if (vcRedistDirName.isEmpty()) {
-        std::wcerr << "Warning: Cannot find Visual Studio installation directory, " << vcDirVar
-            << " is not set.\n";
-        return QString();
-    }
-    if (!vcRedistDirName.endsWith(slash))
-        vcRedistDirName.append(slash);
-    vcRedistDirName.append(QStringLiteral("redist"));
-    if (!QFileInfo(vcRedistDirName).isDir()) {
-        std::wcerr << "Warning: Cannot find Visual Studio redist directory, "
-            << QDir::toNativeSeparators(vcRedistDirName).toStdWString() << ".\n";
-        return QString();
-    }
-    const QString vc2017RedistDirName = vcRedistDirName + QStringLiteral("/MSVC");
-    if (!QFileInfo(vc2017RedistDirName).isDir())
-        return vcRedistDirName; // pre 2017
-    // Look in reverse order for folder containing the debug redist folder
-    const QFileInfoList subDirs =
-        QDir(vc2017RedistDirName).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed);
-    const bool isWindows10 = QOperatingSystemVersion::current() >= QOperatingSystemVersion::Windows10;
-    for (const QFileInfo &f : subDirs) {
-        QString path = f.absoluteFilePath();
-        if (QFileInfo(path + slash + vcDebugRedistDir()).isDir())
-            return path;
-        if (isWindows10) {
-            path += QStringLiteral("/onecore");
-            if (QFileInfo(path + slash + vcDebugRedistDir()).isDir())
-                return path;
-        }
-    }
-    std::wcerr << "Warning: Cannot find Visual Studio redist directory under "
-        << QDir::toNativeSeparators(vc2017RedistDirName).toStdWString() << ".\n";
-    return QString();
-}
-
-static QStringList compilerRunTimeLibs(Platform platform, bool isDebug, unsigned short machineArch)
+static QStringList compilerRunTimeLibs(Platform platform, bool, unsigned short)
 {
     QStringList result;
     switch (platform) {
@@ -1115,7 +1113,7 @@ static QStringList compilerRunTimeLibs(Platform platform, bool isDebug, unsigned
     }
         break;
 #ifdef Q_OS_WIN
-    case WindowsDesktop: { // MSVC/Desktop: Add redistributable packages.
+    case WindowsDesktopMsvc: { // MSVC/Desktop: Add redistributable packages.
         QString vcRedistDirName = vcRedistDir();
         if (vcRedistDirName.isEmpty())
              break;
@@ -1185,9 +1183,15 @@ static inline QString qtlibInfixFromCoreLibName(const QString &path, bool isDebu
 static bool updateLibrary(const QString &sourceFileName, const QString &targetDirectory,
                           const Options &options, QString *errorMessage)
 {
-
-    if (!updateFile(sourceFileName, targetDirectory, options.updateFileFlags, options.json, errorMessage))
+    if (!updateFile(sourceFileName, targetDirectory, options.updateFileFlags, options.json, errorMessage)) {
+        if (options.ignoreLibraryErrors) {
+            std::wcerr << "Warning: Could not update " << sourceFileName << " :" << *errorMessage << '\n';
+            errorMessage->clear();
+            return true;
+        }
         return false;
+    }
+
     if (options.deployPdb) {
         const QFileInfo pdb(pdbFileName(sourceFileName));
         if (pdb.isFile())
@@ -1208,7 +1212,7 @@ static DeployResult deploy(const Options &options,
     const QString libraryLocation = options.platform == Unix ? qmakeVariables.value(QStringLiteral("QT_INSTALL_LIBS")) : qtBinDir;
     const QString infix = qmakeVariables.value(QLatin1String(qmakeInfixKey));
     const int version = qtVersion(qmakeVariables);
-    Q_UNUSED(version)
+    Q_UNUSED(version);
 
     if (optVerboseLevel > 1)
         std::wcout << "Qt binaries in " << QDir::toNativeSeparators(qtBinDir) << '\n';
@@ -1229,9 +1233,26 @@ static DeployResult deploy(const Options &options,
         }
     }
 
-    const bool isDebug = options.debugDetection == Options::DebugDetectionAuto ? detectedDebug: options.debugDetection == Options::DebugDetectionForceDebug;
-    result.isDebug = isDebug;
-    const DebugMatchMode debugMatchMode = isDebug ? MatchDebug : MatchRelease;
+    DebugMatchMode debugMatchMode = MatchDebugOrRelease;
+    result.isDebug = false;
+    switch (options.debugDetection) {
+    case Options::DebugDetectionAuto:
+        // Debug detection is only relevant for Msvc/ClangMsvc which have distinct
+        // runtimes and binaries. For anything else, use MatchDebugOrRelease
+        // since also debug cannot be reliably detect for MinGW.
+        if (options.platform.testFlag(Msvc) || options.platform.testFlag(ClangMsvc)) {
+            result.isDebug = detectedDebug;
+            debugMatchMode = result.isDebug ? MatchDebug : MatchRelease;
+        }
+        break;
+    case Options::DebugDetectionForceDebug:
+        result.isDebug = true;
+        debugMatchMode = MatchDebug;
+        break;
+    case Options::DebugDetectionForceRelease:
+        debugMatchMode = MatchRelease;
+        break;
+    }
 
     // Determine application type, check Quick2 is used by looking at the
     // direct dependencies (do not be fooled by QtWebKit depending on it).
@@ -1249,7 +1270,7 @@ static DeployResult deploy(const Options &options,
 
     if (optVerboseLevel) {
         std::wcout << QDir::toNativeSeparators(options.binaries.first()) << ' '
-                   << wordSize << " bit, " << (isDebug ? "debug" : "release")
+                   << wordSize << " bit, " << (result.isDebug ? "debug" : "release")
                    << " executable";
         if (usesQml2)
             std::wcout << " [QML]";
@@ -1263,7 +1284,7 @@ static DeployResult deploy(const Options &options,
 
     // Some Windows-specific checks: Qt5Core depends on ICU when configured with "-icu". Other than
     // that, Qt5WebKit has a hard dependency on ICU.
-    if (options.platform & WindowsBased)  {
+    if (options.platform.testFlag(WindowsBased))  {
         const QStringList qtLibs = dependentQtLibs.filter(QStringLiteral("Qt5Core"), Qt::CaseInsensitive)
             + dependentQtLibs.filter(QStringLiteral("Qt5WebKit"), Qt::CaseInsensitive);
         for (const QString &qtLib : qtLibs) {
@@ -1296,6 +1317,10 @@ static DeployResult deploy(const Options &options,
     // Scan Quick2 imports
     QmlImportScanResult qmlScanResult;
     if (options.quickImports && usesQml2) {
+        // Custom list of import paths provided by user
+        QStringList qmlImportPaths = options.qmlImportPaths;
+        // Qt's own QML modules
+        qmlImportPaths << qmakeVariables.value(QStringLiteral("QT_INSTALL_QML"));
         QStringList qmlDirectories = options.qmlDirectories;
         if (qmlDirectories.isEmpty()) {
             const QString qmlDirectory = findQmlDirectory(options.platform, options.directory);
@@ -1306,7 +1331,7 @@ static DeployResult deploy(const Options &options,
             if (optVerboseLevel >= 1)
                 std::wcout << "Scanning " << QDir::toNativeSeparators(qmlDirectory) << ":\n";
             const QmlImportScanResult scanResult =
-                runQmlImportScanner(qmlDirectory, qmakeVariables.value(QStringLiteral("QT_INSTALL_QML")),
+                runQmlImportScanner(qmlDirectory, qmlImportPaths,
                                     result.directlyUsedQtLibraries & QtWidgetsModule,
                                     options.platform, debugMatchMode, errorMessage);
             if (!scanResult.ok)
@@ -1349,6 +1374,7 @@ static DeployResult deploy(const Options &options,
         findQtPlugins(&result.deployedQtLibraries,
                       // For non-QML applications, disable QML to prevent it from being pulled in by the qtaccessiblequick plugin.
                       options.disabledLibraries | (usesQml2 ? 0 : (QtQmlModule | QtQuickModule)),
+                      options.disabledPlugins,
                       qmakeVariables.value(QStringLiteral("QT_INSTALL_PLUGINS")), libraryLocation, infix,
                       debugMatchMode, options.platform, &platformPlugin);
 
@@ -1356,7 +1382,7 @@ static DeployResult deploy(const Options &options,
     QString qtGuiLibrary;
     for (const auto &qtModule : qtModuleEntries) {
         if (result.deployedQtLibraries & qtModule.module) {
-            const QString library = libraryPath(libraryLocation, qtModule.libraryName, qtLibInfix, options.platform, isDebug);
+            const QString library = libraryPath(libraryLocation, qtModule.libraryName, qtLibInfix, options.platform, result.isDebug);
             deployedQtLibraries.append(library);
             if (qtModule.module == QtGuiModule)
                 qtGuiLibrary = library;
@@ -1378,14 +1404,13 @@ static DeployResult deploy(const Options &options,
     }
 
     // Check for ANGLE on the Qt5Gui library.
-    if ((options.platform & WindowsBased) && options.platform != WinCEIntel
-        && options.platform != WinCEArm && !qtGuiLibrary.isEmpty())  {
-        QString libGlesName = QStringLiteral("libGLESV2");
-        if (isDebug)
+    if (options.platform.testFlag(WindowsBased) && !qtGuiLibrary.isEmpty())  {
+        QString libGlesName = QStringLiteral("libGLESv2");
+        if (result.isDebug && platformHasDebugSuffix(options.platform))
             libGlesName += QLatin1Char('d');
         libGlesName += QLatin1String(windowsSharedLibrarySuffix);
         QString libCombinedQtAngleName = QStringLiteral("QtANGLE");
-        if (isDebug)
+        if (result.isDebug && platformHasDebugSuffix(options.platform))
             libCombinedQtAngleName += QLatin1Char('d');
         libCombinedQtAngleName += QLatin1String(windowsSharedLibrarySuffix);
         const QStringList guiLibraries = findDependentLibraries(qtGuiLibrary, options.platform, errorMessage);
@@ -1401,7 +1426,7 @@ static DeployResult deploy(const Options &options,
                 const QString libGlesFullPath = qtBinDir + slash + libGlesName;
                 deployedQtLibraries.append(libGlesFullPath);
                 QString libEglFullPath = qtBinDir + slash + QStringLiteral("libEGL");
-                if (isDebug)
+                if (result.isDebug && platformHasDebugSuffix(options.platform))
                     libEglFullPath += QLatin1Char('d');
                 libEglFullPath += QLatin1String(windowsSharedLibrarySuffix);
                 deployedQtLibraries.append(libEglFullPath);
@@ -1427,7 +1452,7 @@ static DeployResult deploy(const Options &options,
     // We need to copy ucrtbased.dll on WinRT as this library is not part of
     // the c runtime package. VS 2015 does the same when deploying to a device
     // or creating an appx.
-    if (isDebug && options.platform == WinRtArm
+    if (result.isDebug && options.platform == WinRtArmMsvc
              && qmakeVariables.value(QStringLiteral("QMAKE_XSPEC")).endsWith(QLatin1String("msvc2015"))) {
         const QString extensionPath = QString::fromLocal8Bit(qgetenv("ExtensionSdkDir"));
         const QString ucrtVersion = QString::fromLocal8Bit(qgetenv("UCRTVersion"));
@@ -1457,7 +1482,7 @@ static DeployResult deploy(const Options &options,
             options.directory : options.libraryDirectory;
         QStringList libraries = deployedQtLibraries;
         if (options.compilerRunTime)
-            libraries.append(compilerRunTimeLibs(options.platform, isDebug, machineArch));
+            libraries.append(compilerRunTimeLibs(options.platform, result.isDebug, machineArch));
         for (const QString &qtLib : qAsConst(libraries)) {
             if (!updateLibrary(qtLib, targetPath, options, errorMessage))
                 return result;
@@ -1465,10 +1490,13 @@ static DeployResult deploy(const Options &options,
 
         if (options.patchQt  && !options.dryRun && !options.isWinRt()) {
             const QString qt5CoreName = QFileInfo(libraryPath(libraryLocation, "Qt5Core", qtLibInfix,
-                                                              options.platform, isDebug)).fileName();
-
-            if (!patchQtCore(targetPath + QLatin1Char('/') + qt5CoreName, errorMessage))
-                return result;
+                                                              options.platform, result.isDebug)).fileName();
+#ifndef QT_RELOCATABLE
+            if (!patchQtCore(targetPath + QLatin1Char('/') + qt5CoreName, errorMessage)) {
+                std::wcerr << "Warning: " << *errorMessage << '\n';
+                errorMessage->clear();
+            }
+#endif
         }
     } // optLibraries
 
@@ -1576,7 +1604,7 @@ static bool deployWebEngineCore(const QMap<QString, QString> &qmakeVariables,
                                              "qtwebengine_resources_100p.pak",
                                              "qtwebengine_resources_200p.pak"};
     QByteArray webEngineProcessName(webEngineProcessC);
-    if (isDebug)
+    if (isDebug && platformHasDebugSuffix(options.platform))
         webEngineProcessName.append('d');
     if (optVerboseLevel)
         std::wcout << "Deploying: " << webEngineProcessName.constData() << "...\n";
@@ -1641,7 +1669,7 @@ int main(int argc, char **argv)
     const QMap<QString, QString> qmakeVariables = queryQMakeAll(&errorMessage);
     const QString xSpec = qmakeVariables.value(QStringLiteral("QMAKE_XSPEC"));
     options.platform = platformFromMkSpec(xSpec);
-    if (options.platform == WindowsDesktopMinGW || options.platform == WindowsDesktop)
+    if (options.platform == WindowsDesktopMinGW || options.platform == WindowsDesktopMsvc)
         options.compilerRunTime = true;
 
     {   // Command line
