@@ -9,6 +9,6 @@ CONFIG += force_bootstrap
 win32: LIBS += -lshlwapi
 
 INCLUDEPATH += /usr/include/parser-library
-LIBS += -lpe-parser-library
+LIBS += -lpe-parse
 
 QMAKE_TARGET_DESCRIPTION = "Qt Windows Deployment Tool"

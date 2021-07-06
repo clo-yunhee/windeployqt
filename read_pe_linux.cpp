@@ -1,5 +1,5 @@
-#include <parse.h>
-#include <nt-headers.h>
+#include <pe-parse/parse.h>
+#include <pe-parse/nt-headers.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>

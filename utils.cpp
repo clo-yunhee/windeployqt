@@ -55,7 +55,7 @@
 
 QT_BEGIN_NAMESPACE
 
-int optVerboseLevel = 1;
+int optVerboseLevel = 3;
 
 bool isBuildDirectory(Platform platform, const QString &dirName)
 {
