@@ -12,4 +12,3 @@ INCLUDEPATH += /usr/include/parser-library
 LIBS += -lpe-parser-library
 
 QMAKE_TARGET_DESCRIPTION = "Qt Windows Deployment Tool"
-load(qt_tool)
