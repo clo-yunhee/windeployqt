@@ -204,10 +204,11 @@ inline bool readExecutable(const QString &executableFileName, Platform platform,
                            QString *errorMessage, QStringList *dependentLibraries = 0,
                            unsigned *wordSize = 0, bool *isDebug = 0, unsigned short *machineArch = nullptr)
 {
-    return platform == Unix ?
+    /*return platform == Unix ?
         readElfExecutable(executableFileName, errorMessage, dependentLibraries, wordSize, isDebug) :
         readPeExecutable(executableFileName, errorMessage, dependentLibraries, wordSize, isDebug,
-                         (platform == WindowsDesktopMinGW), machineArch);
+                         (platform == WindowsDesktopMinGW), machineArch);*/
+    return readPeExecutable(executableFileName, errorMessage, dependentLibraries, wordSize, isDebug, true, machineArch);
 }
 
 #ifdef Q_OS_WIN
