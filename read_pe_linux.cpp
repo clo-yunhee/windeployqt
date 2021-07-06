@@ -21,7 +21,7 @@ using namespace peparse;
 #define IMAGE_FIRST_SECTION(ntheader) ((image_section_header *) ((uintptr_t) (ntheader) + offsetof(nt_header_32, OptionalHeader) + ((ntheader))->FileHeader.SizeOfOptionalHeader))
  
 bool readPeExecutable(const QString &peExecutableFileName, QString *,
-                      QStringList *dependentLibrariesIn, unsigned *,
+                      QStringList *dependentLibrariesIn, unsigned *wordSize,
                       bool *isDebugIn, bool, unsigned short *machineArchIn)
 {
     // Suppress stderr for the duration of the ParsePEFromFile function call.
@@ -56,6 +56,9 @@ bool readPeExecutable(const QString &peExecutableFileName, QString *,
 
     if (isDebugIn)
         *isDebugIn = false;
+
+    if (wordSize)
+        *wordSize = 64;
 
     if (machineArchIn)
         *machineArchIn = p->peHeader.nt.FileHeader.Machine;
